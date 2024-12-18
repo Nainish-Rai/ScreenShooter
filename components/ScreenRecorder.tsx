@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { RecordingState } from "@/types/recording";
+import { RecordingState, ExportConfig } from "@/types/recording";
 import { PreviewContainer } from "./PreviewContainer";
 import { RecordingControls } from "./RecordingControls";
+import { ExportDialog } from "./ExportDialog";
 
 export default function ScreenRecorder() {
   const [recordingState, setRecordingState] = useState<RecordingState>({
@@ -22,6 +23,9 @@ export default function ScreenRecorder() {
   const [cursor, setCursor] = useState({ x: 0, y: 0, visible: false });
   const [isTemporaryZoom, setIsTemporaryZoom] = useState(false);
   const temporaryZoomTimeout = useRef<NodeJS.Timeout | null>(null);
+  const [showExportDialog, setShowExportDialog] = useState(false);
+  const [exportProgress, setExportProgress] = useState<number | undefined>();
+  const durationInterval = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -129,6 +133,24 @@ export default function ScreenRecorder() {
     };
   }, [handleKeyDown, handleKeyUp]);
 
+  // Add duration tracking effect
+  useEffect(() => {
+    if (recordingState.isRecording && !recordingState.isPaused) {
+      durationInterval.current = setInterval(() => {
+        setRecordingState((prev) => ({
+          ...prev,
+          duration: prev.duration + 1,
+        }));
+      }, 1000);
+    }
+
+    return () => {
+      if (durationInterval.current) {
+        clearInterval(durationInterval.current);
+      }
+    };
+  }, [recordingState.isRecording, recordingState.isPaused]);
+
   // Start screen recording
   const startRecording = async () => {
     try {
@@ -155,11 +177,12 @@ export default function ScreenRecorder() {
       };
 
       mediaRecorder.onstop = () => {
-        const recordedBlob = new Blob(mediaChunks.current, {
-          type: "video/webm",
-        });
-        downloadRecording(recordedBlob);
-        mediaChunks.current = [];
+        const tracks = stream.getTracks();
+        tracks.forEach((track) => track.stop());
+        if (videoRef.current) {
+          videoRef.current.srcObject = null;
+        }
+        setShowExportDialog(true);
       };
 
       setRecordingState((prev) => ({
@@ -167,6 +190,8 @@ export default function ScreenRecorder() {
         stream,
         mediaRecorder,
         isRecording: true,
+        duration: 0,
+        isPaused: false,
       }));
 
       mediaRecorder.start();
@@ -182,35 +207,89 @@ export default function ScreenRecorder() {
     }
   };
 
+  // Add pause/resume functionality
+  const togglePause = useCallback(() => {
+    if (!recordingState.mediaRecorder) return;
+
+    if (recordingState.isPaused) {
+      recordingState.mediaRecorder.resume();
+      setRecordingState((prev) => ({ ...prev, isPaused: false }));
+    } else {
+      recordingState.mediaRecorder.pause();
+      setRecordingState((prev) => ({ ...prev, isPaused: true }));
+    }
+  }, [recordingState.mediaRecorder, recordingState.isPaused]);
+
   // Stop recording
   const stopRecording = useCallback(() => {
     if (recordingState.mediaRecorder && recordingState.stream) {
       recordingState.mediaRecorder.stop();
       recordingState.stream.getTracks().forEach((track) => track.stop());
 
-      setRecordingState((prev) => ({
-        ...prev,
+      setRecordingState({
         isRecording: false,
+        isPaused: false,
+        duration: 0,
         stream: null,
         mediaRecorder: null,
-      }));
+      });
 
-      if (videoRef.current) {
-        videoRef.current.srcObject = null;
+      if (durationInterval.current) {
+        clearInterval(durationInterval.current);
       }
     }
   }, [recordingState.mediaRecorder, recordingState.stream]);
 
+  // Add cleanup effect
+  useEffect(() => {
+    return () => {
+      if (recordingState.stream) {
+        recordingState.stream.getTracks().forEach((track) => track.stop());
+      }
+      if (durationInterval.current) {
+        clearInterval(durationInterval.current);
+      }
+      if (temporaryZoomTimeout.current) {
+        clearTimeout(temporaryZoomTimeout.current);
+      }
+    };
+  }, [recordingState.stream]);
+
   // Download recording
-  const downloadRecording = (blob: Blob) => {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `screen-recording-${new Date().getTime()}.webm`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+  // const downloadRecording = async (blob: Blob) => {
+  //   setShowExportDialog(true);
+  // };
+
+  const handleExport = async (config: ExportConfig) => {
+    const formData = new FormData();
+    formData.append(
+      "video",
+      new Blob(mediaChunks.current, { type: "video/webm" })
+    );
+    formData.append("format", config.format);
+    formData.append("quality", config.quality);
+
+    try {
+      const response = await fetch("/api/process-video", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) throw new Error("Export failed");
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `screen-recording.${config.format}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } finally {
+      setShowExportDialog(false);
+      setExportProgress(undefined);
+    }
   };
 
   return (
@@ -230,12 +309,15 @@ export default function ScreenRecorder() {
 
         <RecordingControls
           isRecording={recordingState.isRecording}
+          isPaused={recordingState.isPaused}
           onStartRecording={startRecording}
           onStopRecording={stopRecording}
+          onTogglePause={togglePause}
           zoom={zoom}
           onZoomIn={() => setZoom((prev) => Math.min(prev + 0.2, 3))}
           onZoomOut={() => setZoom((prev) => Math.max(prev - 0.2, 1))}
           onResetZoom={() => setZoom(1)}
+          duration={0}
         />
 
         {recordingState.isRecording && (
@@ -246,6 +328,13 @@ export default function ScreenRecorder() {
             </span>
           </div>
         )}
+
+        <ExportDialog
+          isOpen={showExportDialog}
+          onClose={() => setShowExportDialog(false)}
+          onExport={handleExport}
+          progress={exportProgress}
+        />
       </div>
     </div>
   );

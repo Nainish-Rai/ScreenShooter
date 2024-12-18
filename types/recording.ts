@@ -11,3 +11,8 @@ export interface CursorPosition {
   y: number;
   visible?: boolean;
 }
+
+export interface ExportConfig {
+  format: "mp4" | "webm" | "gif";
+  quality: "high" | "medium" | "low";
+}
