@@ -1,8 +1,9 @@
-// src/components/ScreenRecorder.tsx
 "use client";
 
-import { useState, useRef, useCallback } from "react";
-import { RecordingState } from "@/types";
+import { useState, useRef, useCallback, useEffect } from "react";
+import { RecordingState } from "@/types/recording";
+import { PreviewContainer } from "./PreviewContainer";
+import { RecordingControls } from "./RecordingControls";
 
 export default function ScreenRecorder() {
   const [recordingState, setRecordingState] = useState<RecordingState>({
@@ -13,36 +14,146 @@ export default function ScreenRecorder() {
     mediaRecorder: null,
   });
 
+  const [zoom, setZoom] = useState<number>(1);
+  const [cursorPos, setCursorPos] = useState({ x: 0, y: 0 });
+  const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const mediaChunks = useRef<Blob[]>([]);
+  const [cursor, setCursor] = useState({ x: 0, y: 0, visible: false });
+  const [isTemporaryZoom, setIsTemporaryZoom] = useState(false);
+  const temporaryZoomTimeout = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (containerRef.current) {
+        const rect = containerRef.current.getBoundingClientRect();
+        const x = ((e.clientX - rect.left) / rect.width) * 100;
+        const y = ((e.clientY - rect.top) / rect.height) * 100;
+        setCursorPos({ x, y });
+
+        const cursorX = e.clientX - rect.left;
+        const cursorY = e.clientY - rect.top;
+
+        if (
+          cursorX >= 0 &&
+          cursorX <= rect.width &&
+          cursorY >= 0 &&
+          cursorY <= rect.height
+        ) {
+          setCursor({
+            x: cursorX,
+            y: cursorY,
+            visible: true,
+          });
+        } else {
+          setCursor((prev) => ({ ...prev, visible: false }));
+        }
+      }
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    return () => window.removeEventListener("mousemove", handleMouseMove);
+  }, []);
+
+  // Add click handler for temporary zoom
+  const handleTemporaryZoom = useCallback(
+    (e: MouseEvent) => {
+      if (containerRef.current && recordingState.isRecording) {
+        const rect = containerRef.current.getBoundingClientRect();
+        const x = ((e.clientX - rect.left) / rect.width) * 100;
+        const y = ((e.clientY - rect.top) / rect.height) * 100;
+
+        setCursorPos({ x, y });
+        setIsTemporaryZoom(true);
+        setZoom(2); // Set temporary zoom level
+
+        // Clear existing timeout if any
+        if (temporaryZoomTimeout.current) {
+          clearTimeout(temporaryZoomTimeout.current);
+        }
+
+        // Reset zoom after 1 second
+        temporaryZoomTimeout.current = setTimeout(() => {
+          setIsTemporaryZoom(false);
+          setZoom(1);
+        }, 1000);
+      }
+    },
+    [recordingState.isRecording]
+  );
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (container) {
+      container.addEventListener("click", handleTemporaryZoom);
+      return () => {
+        container.removeEventListener("click", handleTemporaryZoom);
+        if (temporaryZoomTimeout.current) {
+          clearTimeout(temporaryZoomTimeout.current);
+        }
+      };
+    }
+  }, [handleTemporaryZoom]);
+
+  // Add keyboard handler for temporary zoom
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      if (
+        recordingState.isRecording &&
+        (e.code === "KeyZ" || e.code === "Space")
+      ) {
+        e.preventDefault(); // Prevent page scroll on space
+        if (!isTemporaryZoom) {
+          setIsTemporaryZoom(true);
+          setZoom(2);
+        }
+      }
+    },
+    [recordingState.isRecording, isTemporaryZoom]
+  );
+
+  const handleKeyUp = useCallback((e: KeyboardEvent) => {
+    if (e.code === "KeyZ" || e.code === "Space") {
+      e.preventDefault();
+      setIsTemporaryZoom(false);
+      setZoom(1);
+    }
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [handleKeyDown, handleKeyUp]);
 
   // Start screen recording
   const startRecording = async () => {
     try {
-      // Request screen sharing
       const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          displaySurface: "monitor",
-        },
+        video: true,
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
         },
       });
 
-      // Create Media Recorder instance
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+
       const mediaRecorder = new MediaRecorder(stream, {
         mimeType: "video/webm",
       });
 
-      // Handle data available event
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           mediaChunks.current.push(event.data);
         }
       };
 
-      // Handle recording stop
       mediaRecorder.onstop = () => {
         const recordedBlob = new Blob(mediaChunks.current, {
           type: "video/webm",
@@ -51,7 +162,6 @@ export default function ScreenRecorder() {
         mediaChunks.current = [];
       };
 
-      // Update state
       setRecordingState((prev) => ({
         ...prev,
         stream,
@@ -59,15 +169,8 @@ export default function ScreenRecorder() {
         isRecording: true,
       }));
 
-      // Start preview
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-      }
-
-      // Start recording
       mediaRecorder.start();
 
-      // Handle stream stop
       stream.getVideoTracks()[0].onended = () => {
         stopRecording();
       };
@@ -115,53 +218,26 @@ export default function ScreenRecorder() {
       <div className="max-w-4xl mx-auto bg-white rounded-lg shadow-lg p-6">
         <h1 className="text-2xl font-bold mb-6 text-center">Screen Recorder</h1>
 
-        {/* Preview Container */}
-        <div className="aspect-video bg-gray-900 rounded-lg overflow-hidden mb-6">
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className="w-full h-full object-contain"
-          />
-        </div>
+        <PreviewContainer
+          ref={containerRef}
+          videoRef={videoRef as React.RefObject<HTMLVideoElement>}
+          cursor={cursor}
+          cursorPos={cursorPos}
+          zoom={zoom}
+          isTemporaryZoom={isTemporaryZoom}
+          recordingState={recordingState}
+        />
 
-        {/* Controls */}
-        <div className="flex gap-4 justify-center">
-          {!recordingState.isRecording ? (
-            <button
-              onClick={startRecording}
-              className="px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors flex items-center gap-2"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-5 w-5"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <circle cx="10" cy="10" r="8" />
-              </svg>
-              Start Recording
-            </button>
-          ) : (
-            <button
-              onClick={stopRecording}
-              className="px-6 py-3 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors flex items-center gap-2"
-            >
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                className="h-5 w-5"
-                viewBox="0 0 20 20"
-                fill="currentColor"
-              >
-                <rect x="6" y="6" width="8" height="8" />
-              </svg>
-              Stop Recording
-            </button>
-          )}
-        </div>
+        <RecordingControls
+          isRecording={recordingState.isRecording}
+          onStartRecording={startRecording}
+          onStopRecording={stopRecording}
+          zoom={zoom}
+          onZoomIn={() => setZoom((prev) => Math.min(prev + 0.2, 3))}
+          onZoomOut={() => setZoom((prev) => Math.max(prev - 0.2, 1))}
+          onResetZoom={() => setZoom(1)}
+        />
 
-        {/* Recording Status */}
         {recordingState.isRecording && (
           <div className="mt-4 text-center">
             <span className="inline-flex items-center gap-2">
