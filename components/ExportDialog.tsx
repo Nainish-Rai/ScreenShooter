@@ -8,7 +8,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { ExportConfig } from "@/types/recording";
+import { ExportConfig, TimelineState } from "@/types/recording";
 import { Progress } from "@/components/ui/progress";
 
 interface ExportDialogProps {
@@ -16,6 +16,8 @@ interface ExportDialogProps {
   onClose: () => void;
   onExport: (config: ExportConfig) => void;
   progress?: number;
+  timelineState: TimelineState;
+  textOverlay?: { text: string; x: number; y: number };
 }
 
 export function ExportDialog({
@@ -23,12 +25,16 @@ export function ExportDialog({
   onClose,
   onExport,
   progress,
+  textOverlay,
 }: ExportDialogProps) {
   const [format, setFormat] = useState<ExportConfig["format"]>("mp4");
   const [quality, setQuality] = useState<ExportConfig["quality"]>("high");
 
   const handleExport = () => {
-    onExport({ format, quality });
+    onExport({
+      format,
+      quality,
+    });
   };
 
   return (
@@ -83,6 +89,18 @@ export function ExportDialog({
               </RadioGroup>
             </div>
           </div>
+
+          {textOverlay && (
+            <div className="space-y-2">
+              <Label>Text Overlay Preview</Label>
+              <div className="p-2 bg-gray-100 rounded">
+                <p>Text: {textOverlay.text}</p>
+                <p>
+                  Position: ({textOverlay.x}, {textOverlay.y})
+                </p>
+              </div>
+            </div>
+          )}
 
           {progress !== undefined && (
             <Progress value={progress} className="w-full" />

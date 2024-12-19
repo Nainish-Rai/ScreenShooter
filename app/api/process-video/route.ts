@@ -29,9 +29,12 @@ export async function POST(request: NextRequest) {
       if (err) throw err;
     });
 
+    const textOverlayStr = formData.get("textOverlay") as string;
+    const textOverlay = textOverlayStr ? JSON.parse(textOverlayStr) : null;
+
     // Process video based on format and quality
     await new Promise((resolve, reject) => {
-      const command = ffmpeg(inputPath);
+      let command = ffmpeg(inputPath);
 
       if (format === "gif") {
         command.fps(15).size("640x?").format("gif");
@@ -44,6 +47,12 @@ export async function POST(request: NextRequest) {
 
         const qualitySettings =
           qualityOptions[quality as keyof typeof qualityOptions];
+
+        if (textOverlay) {
+          command = command.videoFilters(
+            `drawtext=text='${textOverlay.text}':x=${textOverlay.x}:y=${textOverlay.y}:fontsize=24:fontcolor=white:borderw=2`
+          );
+        }
 
         command
           .videoCodec("libx264")

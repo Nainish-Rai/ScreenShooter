@@ -15,4 +15,25 @@ export interface CursorPosition {
 export interface ExportConfig {
   format: "mp4" | "webm" | "gif";
   quality: "high" | "medium" | "low";
+  textOverlay?: TextOverlay;
+}
+
+export interface ZoomEvent {
+  id: string;
+  startTime: number;
+  duration: number;
+  zoomLevel: number;
+  cursorPosition: CursorPosition;
+}
+
+export interface TimelineState {
+  recordedBlob: Blob | null;
+  duration: number;
+  zoomEvents: ZoomEvent[];
+}
+
+export interface TextOverlay {
+  text: string;
+  x: number;
+  y: number;
 }

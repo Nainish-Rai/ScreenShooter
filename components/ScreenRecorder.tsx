@@ -1,10 +1,24 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { RecordingState, ExportConfig } from "@/types/recording";
+import {
+  RecordingState,
+  ExportConfig,
+  ZoomEvent,
+  TimelineState,
+} from "@/types/recording";
 import { PreviewContainer } from "./PreviewContainer";
 import { RecordingControls } from "./RecordingControls";
 import { ExportDialog } from "./ExportDialog";
+import { TimelineEditor } from "./TimelineEditor";
+import { randomUUID } from "crypto";
+
+// Add TextOverlay type
+interface TextOverlay {
+  text: string;
+  x: number;
+  y: number;
+}
 
 export default function ScreenRecorder() {
   const [recordingState, setRecordingState] = useState<RecordingState>({
@@ -26,6 +40,17 @@ export default function ScreenRecorder() {
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [exportProgress, setExportProgress] = useState<number | undefined>();
   const durationInterval = useRef<NodeJS.Timeout | null>(null);
+  const [timelineState, setTimelineState] = useState<TimelineState>({
+    recordedBlob: null,
+    duration: 0,
+    zoomEvents: [],
+  });
+  const [isEditing, setIsEditing] = useState(false);
+  const lastZoomEvent = useRef<ZoomEvent | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  // Add textOverlay state
+  const [textOverlay, setTextOverlay] = useState<TextOverlay | undefined>();
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -71,6 +96,20 @@ export default function ScreenRecorder() {
         setIsTemporaryZoom(true);
         setZoom(2); // Set temporary zoom level
 
+        const newZoomEvent: ZoomEvent = {
+          id: randomUUID(),
+          startTime: recordingState.duration,
+          duration: 1, // 1 second default
+          zoomLevel: 2,
+          cursorPosition: { x, y },
+        };
+
+        setTimelineState((prev) => ({
+          ...prev,
+          zoomEvents: [...prev.zoomEvents, newZoomEvent],
+        }));
+        lastZoomEvent.current = newZoomEvent;
+
         // Clear existing timeout if any
         if (temporaryZoomTimeout.current) {
           clearTimeout(temporaryZoomTimeout.current);
@@ -83,7 +122,7 @@ export default function ScreenRecorder() {
         }, 1000);
       }
     },
-    [recordingState.isRecording]
+    [recordingState.isRecording, recordingState.duration]
   );
 
   useEffect(() => {
@@ -151,9 +190,23 @@ export default function ScreenRecorder() {
     };
   }, [recordingState.isRecording, recordingState.isPaused]);
 
-  // Start screen recording
+  // Add new function to reset states
+  const resetStates = useCallback(() => {
+    mediaChunks.current = [];
+    setTimelineState({
+      recordedBlob: null,
+      duration: 0,
+      zoomEvents: [],
+    });
+    setTextOverlay(undefined);
+    setIsEditing(false);
+  }, []);
+
+  // Modify startRecording to clear previous recording data
   const startRecording = async () => {
     try {
+      resetStates(); // Add this line at the start
+
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
         audio: {
@@ -176,14 +229,14 @@ export default function ScreenRecorder() {
         }
       };
 
-      mediaRecorder.onstop = () => {
-        const tracks = stream.getTracks();
-        tracks.forEach((track) => track.stop());
-        if (videoRef.current) {
-          videoRef.current.srcObject = null;
-        }
-        setShowExportDialog(true);
-      };
+      // mediaRecorder.onstop = () => {
+      //   const tracks = stream.getTracks();
+      //   tracks.forEach((track) => track.stop());
+      //   if (videoRef.current) {
+      //     videoRef.current.srcObject = null;
+      //   }
+      //   // setShowExportDialog(true);
+      // };
 
       setRecordingState((prev) => ({
         ...prev,
@@ -220,25 +273,67 @@ export default function ScreenRecorder() {
     }
   }, [recordingState.mediaRecorder, recordingState.isPaused]);
 
-  // Stop recording
-  const stopRecording = useCallback(() => {
+  // Modify stopRecording to properly handle chunks
+  const stopRecording = useCallback(async () => {
     if (recordingState.mediaRecorder && recordingState.stream) {
       recordingState.mediaRecorder.stop();
       recordingState.stream.getTracks().forEach((track) => track.stop());
 
-      setRecordingState({
-        isRecording: false,
-        isPaused: false,
-        duration: 0,
-        stream: null,
-        mediaRecorder: null,
+      // Wait for the last chunk to be added
+      await new Promise((resolve) => {
+        if (recordingState.mediaRecorder) {
+          recordingState.mediaRecorder.addEventListener("stop", resolve, {
+            once: true,
+          });
+        }
       });
 
-      if (durationInterval.current) {
-        clearInterval(durationInterval.current);
+      setIsProcessing(true);
+      const finalBlob = new Blob(mediaChunks.current, { type: "video/webm" });
+
+      try {
+        const formData = new FormData();
+        formData.append("video", finalBlob);
+        formData.append("format", "mp4");
+        formData.append("quality", "high");
+
+        const response = await fetch("/api/process-video", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!response.ok) throw new Error("Processing failed");
+
+        const processedBlob = await response.blob();
+        setTimelineState((prev) => ({
+          ...prev,
+          recordedBlob: processedBlob,
+          duration: recordingState.duration,
+        }));
+
+        setRecordingState({
+          isRecording: false,
+          isPaused: false,
+          duration: 0,
+          stream: null,
+          mediaRecorder: null,
+        });
+
+        setIsEditing(true);
+      } catch (error) {
+        console.error("Error processing video:", error);
+        alert("Failed to process video. Please try again.");
+        resetStates();
+      } finally {
+        setIsProcessing(false);
       }
     }
-  }, [recordingState.mediaRecorder, recordingState.stream]);
+  }, [
+    recordingState.mediaRecorder,
+    recordingState.stream,
+    recordingState.duration,
+    resetStates,
+  ]);
 
   // Add cleanup effect
   useEffect(() => {
@@ -260,6 +355,7 @@ export default function ScreenRecorder() {
   //   setShowExportDialog(true);
   // };
 
+  // Update handleExport to include text overlay
   const handleExport = async (config: ExportConfig) => {
     const formData = new FormData();
     formData.append(
@@ -268,6 +364,11 @@ export default function ScreenRecorder() {
     );
     formData.append("format", config.format);
     formData.append("quality", config.quality);
+
+    // Add text overlay data if available
+    if (textOverlay) {
+      formData.append("textOverlay", JSON.stringify(textOverlay));
+    }
 
     try {
       const response = await fetch("/api/process-video", {
@@ -292,41 +393,82 @@ export default function ScreenRecorder() {
     }
   };
 
+  // Add handlers for timeline editing
+  const handleUpdateZoomEvent = (updatedEvent: ZoomEvent) => {
+    setTimelineState((prev) => ({
+      ...prev,
+      zoomEvents: prev.zoomEvents.map((event) =>
+        event.id === updatedEvent.id ? updatedEvent : event
+      ),
+    }));
+  };
+
+  const handleDeleteZoomEvent = (eventId: string) => {
+    setTimelineState((prev) => ({
+      ...prev,
+      zoomEvents: prev.zoomEvents.filter((event) => event.id !== eventId),
+    }));
+  };
+
+  // Update the TimelineEditor handler
+  const handleTimelineExport = (overlay?: TextOverlay) => {
+    setTextOverlay(overlay);
+    setShowExportDialog(true);
+  };
+
   return (
     <div className="min-h-screen bg-gray-100 p-8">
       <div className="max-w-4xl mx-auto bg-white rounded-lg shadow-lg p-6">
-        <h1 className="text-2xl font-bold mb-6 text-center">Screen Recorder</h1>
-
-        <PreviewContainer
-          ref={containerRef}
-          videoRef={videoRef as React.RefObject<HTMLVideoElement>}
-          cursor={cursor}
-          cursorPos={cursorPos}
-          zoom={zoom}
-          isTemporaryZoom={isTemporaryZoom}
-          recordingState={recordingState}
-        />
-
-        <RecordingControls
-          isRecording={recordingState.isRecording}
-          isPaused={recordingState.isPaused}
-          onStartRecording={startRecording}
-          onStopRecording={stopRecording}
-          onTogglePause={togglePause}
-          zoom={zoom}
-          onZoomIn={() => setZoom((prev) => Math.min(prev + 0.2, 3))}
-          onZoomOut={() => setZoom((prev) => Math.max(prev - 0.2, 1))}
-          onResetZoom={() => setZoom(1)}
-          duration={0}
-        />
-
-        {recordingState.isRecording && (
-          <div className="mt-4 text-center">
-            <span className="inline-flex items-center gap-2">
-              <span className="h-3 w-3 bg-red-500 rounded-full animate-pulse"></span>
-              Recording in progress...
-            </span>
+        {isProcessing ? (
+          <div className="text-center p-8">
+            <div className="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+            <p>Processing video...</p>
           </div>
+        ) : !isEditing ? (
+          <>
+            <h1 className="text-2xl font-bold mb-6 text-center">
+              Screen Recorder
+            </h1>
+
+            <PreviewContainer
+              ref={containerRef}
+              videoRef={videoRef as React.RefObject<HTMLVideoElement>}
+              cursor={cursor}
+              cursorPos={cursorPos}
+              zoom={zoom}
+              isTemporaryZoom={isTemporaryZoom}
+              recordingState={recordingState}
+            />
+
+            <RecordingControls
+              isRecording={recordingState.isRecording}
+              isPaused={recordingState.isPaused}
+              onStartRecording={startRecording}
+              onStopRecording={stopRecording}
+              onTogglePause={togglePause}
+              zoom={zoom}
+              onZoomIn={() => setZoom((prev) => Math.min(prev + 0.2, 3))}
+              onZoomOut={() => setZoom((prev) => Math.max(prev - 0.2, 1))}
+              onResetZoom={() => setZoom(1)}
+              duration={0}
+            />
+
+            {recordingState.isRecording && (
+              <div className="mt-4 text-center">
+                <span className="inline-flex items-center gap-2">
+                  <span className="h-3 w-3 bg-red-500 rounded-full animate-pulse"></span>
+                  Recording in progress...
+                </span>
+              </div>
+            )}
+          </>
+        ) : (
+          <TimelineEditor
+            timelineState={timelineState}
+            onUpdateZoomEvent={handleUpdateZoomEvent}
+            onDeleteZoomEvent={handleDeleteZoomEvent}
+            onExport={handleTimelineExport}
+          />
         )}
 
         <ExportDialog
@@ -334,6 +476,8 @@ export default function ScreenRecorder() {
           onClose={() => setShowExportDialog(false)}
           onExport={handleExport}
           progress={exportProgress}
+          timelineState={timelineState}
+          textOverlay={textOverlay}
         />
       </div>
     </div>
